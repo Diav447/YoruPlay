@@ -1,5 +1,6 @@
 package com.diav.yoruplay
 
+import android.content.ComponentName
 import android.net.Uri
 import android.os.Bundle
 import androidx.activity.ComponentActivity
@@ -16,11 +17,14 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.viewinterop.AndroidView
+import androidx.core.content.ContextCompat
 import androidx.media3.common.MediaItem
 import androidx.media3.common.Player
-import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.session.MediaController
+import androidx.media3.session.SessionToken
 import androidx.media3.ui.PlayerView
-import androidx.compose.ui.viewinterop.AndroidView
+import com.google.common.util.concurrent.ListenableFuture
 
 private val Purple = Color(0xFFBB86FC)
 private val Background = Color(0xFF0B0B10)
@@ -28,13 +32,18 @@ private val Panel = Color(0xFF201A2C)
 
 class MainActivity : ComponentActivity() {
 
-    private var player: ExoPlayer? = null
+    private var controller: MediaController? = null
+    private var controllerFuture: ListenableFuture<MediaController>? = null
+
     private var selectedUri by mutableStateOf<Uri?>(null)
     private var selectedName by mutableStateOf("Belum ada media dipilih")
     private var isVideo by mutableStateOf(false)
     private var isPlaying by mutableStateOf(false)
     private var duration by mutableLongStateOf(0L)
     private var position by mutableLongStateOf(0L)
+    private var controllerReady by mutableStateOf(false)
+
+    private var pendingMedia: Pair<Uri, Boolean>? = null
 
     private val audioPicker =
         registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
@@ -46,20 +55,52 @@ class MainActivity : ComponentActivity() {
             uri?.let { openMedia(it, true) }
         }
 
+    private val playerListener = object : Player.Listener {
+        override fun onIsPlayingChanged(playing: Boolean) {
+            isPlaying = playing
+        }
+
+        override fun onPlaybackStateChanged(state: Int) {
+            duration = controller?.duration?.coerceAtLeast(0L) ?: 0L
+        }
+
+        override fun onMediaItemTransition(
+            mediaItem: MediaItem?,
+            reason: Int
+        ) {
+            duration = controller?.duration?.coerceAtLeast(0L) ?: 0L
+        }
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
-        player = ExoPlayer.Builder(this).build().apply {
-            addListener(object : Player.Listener {
-                override fun onIsPlayingChanged(playing: Boolean) {
-                    this@MainActivity.isPlaying = playing
-                }
+        val token = SessionToken(
+            this,
+            ComponentName(this, PlaybackService::class.java)
+        )
 
-                override fun onPlaybackStateChanged(state: Int) {
-                    this@MainActivity.duration = this@MainActivity.player?.duration?.coerceAtLeast(0L) ?: 0L
+        controllerFuture = MediaController.Builder(this, token)
+            .buildAsync()
+
+        controllerFuture?.addListener(
+            {
+                try {
+                    val mediaController = controllerFuture?.get() ?: return@addListener
+                    controller = mediaController
+                    mediaController.addListener(playerListener)
+                    controllerReady = true
+
+                    pendingMedia?.let { (uri, video) ->
+                        pendingMedia = null
+                        playMedia(uri, video)
+                    }
+                } catch (e: Exception) {
+                    e.printStackTrace()
                 }
-            })
-        }
+            },
+            ContextCompat.getMainExecutor(this)
+        )
 
         setContent {
             MaterialTheme(
@@ -76,7 +117,8 @@ class MainActivity : ComponentActivity() {
                     playing = isPlaying,
                     duration = duration,
                     position = position,
-                    player = player,
+                    player = controller,
+                    controllerReady = controllerReady,
                     onPickAudio = {
                         audioPicker.launch(arrayOf("audio/*"))
                     },
@@ -84,12 +126,12 @@ class MainActivity : ComponentActivity() {
                         videoPicker.launch(arrayOf("video/*"))
                     },
                     onPlayPause = {
-                        player?.let {
+                        controller?.let {
                             if (it.isPlaying) it.pause() else it.play()
                         }
                     },
                     onSeek = { value ->
-                        player?.seekTo(value)
+                        controller?.seekTo(value)
                     },
                     onPosition = { value ->
                         position = value
@@ -106,7 +148,7 @@ class MainActivity : ComponentActivity() {
                 android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION
             )
         } catch (_: SecurityException) {
-            // Playback can still work while the current URI grant is valid.
+            // Gunakan URI selama izin yang tersedia masih berlaku.
         }
 
         selectedUri = uri
@@ -114,9 +156,18 @@ class MainActivity : ComponentActivity() {
             ?.substringAfterLast('/')
             ?.takeIf { it.isNotBlank() }
             ?: if (video) "Video lokal" else "Audio lokal"
+
         isVideo = video
 
-        player?.apply {
+        if (controllerReady && controller != null) {
+            playMedia(uri, video)
+        } else {
+            pendingMedia = uri to video
+        }
+    }
+
+    private fun playMedia(uri: Uri, video: Boolean) {
+        controller?.apply {
             setMediaItem(MediaItem.fromUri(uri))
             prepare()
             playWhenReady = true
@@ -124,8 +175,23 @@ class MainActivity : ComponentActivity() {
     }
 
     override fun onDestroy() {
-        player?.release()
-        player = null
+        controller?.removeListener(playerListener)
+        controller = null
+        controllerReady = false
+
+        controllerFuture?.let { future ->
+            if (future.isDone && !future.isCancelled) {
+                try {
+                    future.get().release()
+                } catch (_: Exception) {
+                    future.cancel(false)
+                }
+            } else {
+                future.cancel(false)
+            }
+        }
+        controllerFuture = null
+
         super.onDestroy()
     }
 }
@@ -138,7 +204,8 @@ private fun MediaHome(
     playing: Boolean,
     duration: Long,
     position: Long,
-    player: ExoPlayer?,
+    player: Player?,
+    controllerReady: Boolean,
     onPickAudio: () -> Unit,
     onPickVideo: () -> Unit,
     onPlayPause: () -> Unit,
@@ -241,7 +308,10 @@ private fun MediaHome(
 
             if (!video) {
                 Slider(
-                    value = sliderPosition.coerceIn(0f, duration.coerceAtLeast(1L).toFloat()),
+                    value = sliderPosition.coerceIn(
+                        0f,
+                        duration.coerceAtLeast(1L).toFloat()
+                    ),
                     onValueChange = { sliderPosition = it },
                     onValueChangeFinished = {
                         onSeek(sliderPosition.toLong())
@@ -259,7 +329,7 @@ private fun MediaHome(
 
                 Button(
                     onClick = onPlayPause,
-                    enabled = uri != null,
+                    enabled = uri != null && controllerReady,
                     modifier = Modifier.padding(top = 12.dp)
                 ) {
                     Text(if (playing) "Pause Ⅱ" else "Play ▶")
