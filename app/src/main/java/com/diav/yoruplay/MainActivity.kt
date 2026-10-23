@@ -52,11 +52,11 @@ class MainActivity : ComponentActivity() {
         player = ExoPlayer.Builder(this).build().apply {
             addListener(object : Player.Listener {
                 override fun onIsPlayingChanged(playing: Boolean) {
-                    isPlaying = playing
+                    this@MainActivity.isPlaying = playing
                 }
 
                 override fun onPlaybackStateChanged(state: Int) {
-                    duration = this@apply.duration.coerceAtLeast(0L)
+                    this@MainActivity.duration = this@MainActivity.player?.duration?.coerceAtLeast(0L) ?: 0L
                 }
             })
         }
