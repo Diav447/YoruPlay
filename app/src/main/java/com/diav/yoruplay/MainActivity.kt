@@ -1,6 +1,8 @@
+
 package com.diav.yoruplay
 
 import android.content.ComponentName
+import android.content.Intent
 import android.net.Uri
 import android.os.Bundle
 import androidx.activity.ComponentActivity
@@ -25,6 +27,8 @@ import androidx.media3.session.MediaController
 import androidx.media3.session.SessionToken
 import androidx.media3.ui.PlayerView
 import com.google.common.util.concurrent.ListenableFuture
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 
 private val Purple = Color(0xFFBB86FC)
 private val Background = Color(0xFF0B0B10)
@@ -42,7 +46,6 @@ class MainActivity : ComponentActivity() {
     private var duration by mutableLongStateOf(0L)
     private var position by mutableLongStateOf(0L)
     private var controllerReady by mutableStateOf(false)
-
     private var pendingMedia: Pair<Uri, Boolean>? = null
 
     private val audioPicker =
@@ -61,14 +64,22 @@ class MainActivity : ComponentActivity() {
         }
 
         override fun onPlaybackStateChanged(state: Int) {
-            duration = controller?.duration?.coerceAtLeast(0L) ?: 0L
+            updatePlayerInfo()
         }
 
         override fun onMediaItemTransition(
             mediaItem: MediaItem?,
             reason: Int
         ) {
-            duration = controller?.duration?.coerceAtLeast(0L) ?: 0L
+            updatePlayerInfo()
+        }
+
+        override fun onPositionDiscontinuity(
+            oldPosition: Player.PositionInfo,
+            newPosition: Player.PositionInfo,
+            reason: Int
+        ) {
+            position = newPosition.positionMs.coerceAtLeast(0L)
         }
     }
 
@@ -80,16 +91,21 @@ class MainActivity : ComponentActivity() {
             ComponentName(this, PlaybackService::class.java)
         )
 
-        controllerFuture = MediaController.Builder(this, token)
-            .buildAsync()
+        val future = MediaController.Builder(this, token).buildAsync()
+        controllerFuture = future
 
-        controllerFuture?.addListener(
+        future.addListener(
             {
+                if (isFinishing || isDestroyed || controllerFuture !== future) {
+                    return@addListener
+                }
+
                 try {
-                    val mediaController = controllerFuture?.get() ?: return@addListener
+                    val mediaController = future.get()
                     controller = mediaController
                     mediaController.addListener(playerListener)
                     controllerReady = true
+                    updatePlayerInfo()
 
                     pendingMedia?.let { (uri, video) ->
                         pendingMedia = null
@@ -132,8 +148,6 @@ class MainActivity : ComponentActivity() {
                     },
                     onSeek = { value ->
                         controller?.seekTo(value)
-                    },
-                    onPosition = { value ->
                         position = value
                     }
                 )
@@ -141,14 +155,22 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    private fun updatePlayerInfo() {
+        controller?.let { player ->
+            duration = player.duration.coerceAtLeast(0L)
+            position = player.currentPosition.coerceAtLeast(0L)
+            isPlaying = player.isPlaying
+        }
+    }
+
     private fun openMedia(uri: Uri, video: Boolean) {
         try {
             contentResolver.takePersistableUriPermission(
                 uri,
-                android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION
+                Intent.FLAG_GRANT_READ_URI_PERMISSION
             )
         } catch (_: SecurityException) {
-            // Gunakan URI selama izin yang tersedia masih berlaku.
+            // Beberapa penyedia dokumen tidak mendukung izin persisten.
         }
 
         selectedUri = uri
@@ -172,6 +194,8 @@ class MainActivity : ComponentActivity() {
             prepare()
             playWhenReady = true
         }
+        position = 0L
+        duration = 0L
     }
 
     override fun onDestroy() {
@@ -190,8 +214,8 @@ class MainActivity : ComponentActivity() {
                 future.cancel(false)
             }
         }
-        controllerFuture = null
 
+        controllerFuture = null
         super.onDestroy()
     }
 }
@@ -209,19 +233,22 @@ private fun MediaHome(
     onPickAudio: () -> Unit,
     onPickVideo: () -> Unit,
     onPlayPause: () -> Unit,
-    onSeek: (Long) -> Unit,
-    onPosition: (Long) -> Unit
+    onSeek: (Long) -> Unit
 ) {
-    var sliderPosition by remember(position) {
-        mutableFloatStateOf(position.toFloat())
+    var sliderPosition by remember { mutableFloatStateOf(0f) }
+    var isSeeking by remember { mutableStateOf(false) }
+
+    LaunchedEffect(position, isSeeking) {
+        if (!isSeeking) sliderPosition = position.toFloat()
     }
 
-    LaunchedEffect(player, uri) {
-        while (true) {
-            if (player != null) {
-                onPosition(player.currentPosition.coerceAtLeast(0L))
+    LaunchedEffect(player) {
+        while (isActive) {
+            if (player != null && !isSeeking) {
+                sliderPosition =
+                    player.currentPosition.coerceAtLeast(0L).toFloat()
             }
-            kotlinx.coroutines.delay(500)
+            delay(500)
         }
     }
 
@@ -257,7 +284,9 @@ private fun MediaHome(
                             useController = true
                         }
                     },
-                    update = { it.player = player },
+                    update = { view ->
+                        view.player = player
+                    },
                     modifier = Modifier
                         .fillMaxWidth()
                         .height(220.dp)
@@ -312,9 +341,13 @@ private fun MediaHome(
                         0f,
                         duration.coerceAtLeast(1L).toFloat()
                     ),
-                    onValueChange = { sliderPosition = it },
+                    onValueChange = {
+                        isSeeking = true
+                        sliderPosition = it
+                    },
                     onValueChangeFinished = {
                         onSeek(sliderPosition.toLong())
+                        isSeeking = false
                     },
                     valueRange = 0f..duration.coerceAtLeast(1L).toFloat(),
                     enabled = uri != null && duration > 0L,
