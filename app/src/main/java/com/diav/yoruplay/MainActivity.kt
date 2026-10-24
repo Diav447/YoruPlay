@@ -35,7 +35,7 @@ private val Background = Color(0xFF0B0B10)
 private val Panel = Color(0xFF201A2C)
 
 private enum class MediaPage {
-    AUDIO, VIDEO, ONLINE
+    AUDIO, VIDEO, ONLINE, WEBVIEW_TEST
 }
 
 class MainActivity : ComponentActivity() {
@@ -462,7 +462,8 @@ private fun MediaHome(
                 listOf(
                     MediaPage.AUDIO to "🎵 Audio",
                     MediaPage.VIDEO to "🎬 Video",
-                    MediaPage.ONLINE to "🌐 Online"
+                    MediaPage.ONLINE to "🌐 Online",
+                    MediaPage.WEBVIEW_TEST to "🧪 WebView Test"
                 ).forEach { (item, label) ->
                     val selected = page == item
 
@@ -665,6 +666,9 @@ private fun MediaHome(
 
                 MediaPage.ONLINE -> {
                     OnlineVideoPage()
+                }
+                MediaPage.WEBVIEW_TEST -> {
+                    WebViewTestPage()
                 }
             }
 
