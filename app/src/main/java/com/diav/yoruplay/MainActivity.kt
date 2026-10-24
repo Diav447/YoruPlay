@@ -35,7 +35,7 @@ private val Background = Color(0xFF0B0B10)
 private val Panel = Color(0xFF201A2C)
 
 private enum class MediaPage {
-    AUDIO, VIDEO
+    AUDIO, VIDEO, ONLINE
 }
 
 class MainActivity : ComponentActivity() {
@@ -461,7 +461,8 @@ private fun MediaHome(
             ) {
                 listOf(
                     MediaPage.AUDIO to "🎵 Audio",
-                    MediaPage.VIDEO to "🎬 Video"
+                    MediaPage.VIDEO to "🎬 Video",
+                    MediaPage.ONLINE to "🌐 Online"
                 ).forEach { (item, label) ->
                     val selected = page == item
 
@@ -655,11 +656,15 @@ private fun MediaHome(
                     }
 
                     Text(
-                        "Pencarian video online menyusul di tahap berikutnya.",
+                        "Video lokal diputar langsung dari perangkat.",
                         color = Color.Gray,
                         fontSize = 12.sp,
                         modifier = Modifier.padding(top = 12.dp)
                     )
+                }
+
+                MediaPage.ONLINE -> {
+                    OnlineVideoPage()
                 }
             }
 
