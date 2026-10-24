@@ -1,5 +1,3 @@
-package com.diav.yoruplay
-
 import android.content.ComponentName
 import android.content.Intent
 import android.net.Uri
@@ -34,6 +32,10 @@ private val Purple = Color(0xFFBB86FC)
 private val Background = Color(0xFF0B0B10)
 private val Panel = Color(0xFF201A2C)
 
+private enum class MediaPage {
+    AUDIO, VIDEO
+}
+
 class MainActivity : ComponentActivity() {
 
     private var controller: MediaController? = null
@@ -42,6 +44,7 @@ class MainActivity : ComponentActivity() {
     private var selectedUri by mutableStateOf<Uri?>(null)
     private var selectedName by mutableStateOf("Belum ada media dipilih")
     private var isVideo by mutableStateOf(false)
+    private var currentPage by mutableStateOf(MediaPage.AUDIO)
     private var isPlaying by mutableStateOf(false)
     private var duration by mutableLongStateOf(0L)
     private var position by mutableLongStateOf(0L)
@@ -58,6 +61,7 @@ class MainActivity : ComponentActivity() {
             ActivityResultContracts.OpenMultipleDocuments()
         ) { uris ->
             if (uris.isNotEmpty()) {
+                currentPage = MediaPage.AUDIO
                 openAudioPlaylist(uris)
             }
         }
@@ -66,7 +70,10 @@ class MainActivity : ComponentActivity() {
         registerForActivityResult(
             ActivityResultContracts.OpenDocument()
         ) { uri ->
-            uri?.let { openMedia(it, true) }
+            uri?.let {
+                currentPage = MediaPage.VIDEO
+                openMedia(it, true)
+            }
         }
 
     private val playerListener = object : Player.Listener {
@@ -155,6 +162,7 @@ class MainActivity : ComponentActivity() {
                 )
             ) {
                 MediaHome(
+                    page = currentPage,
                     title = selectedName,
                     uri = selectedUri,
                     video = isVideo,
@@ -166,6 +174,7 @@ class MainActivity : ComponentActivity() {
                     shuffleEnabled = shuffleEnabled,
                     repeatMode = repeatMode,
                     playlistCount = playlistCount,
+                    onSelectPage = { currentPage = it },
                     onPickAudio = {
                         audioPicker.launch(arrayOf("audio/*"))
                     },
@@ -253,7 +262,6 @@ class MainActivity : ComponentActivity() {
                 Intent.FLAG_GRANT_READ_URI_PERMISSION
             )
         } catch (_: SecurityException) {
-            // Sebagian penyedia dokumen tidak mendukung izin persisten.
         } catch (_: IllegalArgumentException) {
         }
     }
@@ -373,6 +381,7 @@ class MainActivity : ComponentActivity() {
 
 @Composable
 private fun MediaHome(
+    page: MediaPage,
     title: String,
     uri: Uri?,
     video: Boolean,
@@ -384,6 +393,7 @@ private fun MediaHome(
     shuffleEnabled: Boolean,
     repeatMode: Int,
     playlistCount: Int,
+    onSelectPage: (MediaPage) -> Unit,
     onPickAudio: () -> Unit,
     onPickVideo: () -> Unit,
     onPlayPause: () -> Unit,
@@ -437,164 +447,224 @@ private fun MediaHome(
             Text(
                 "Your media. Your night.",
                 color = Color.LightGray,
-                modifier = Modifier.padding(top = 4.dp, bottom = 24.dp)
-            )
-
-            if (video && uri != null) {
-                AndroidView(
-                    factory = { context ->
-                        PlayerView(context).apply {
-                            this.player = player
-                            useController = true
-                        }
-                    },
-                    update = { view ->
-                        view.player = player
-                    },
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(220.dp)
-                )
-            } else {
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(180.dp)
-                        .background(Panel, RoundedCornerShape(20.dp)),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Text(
-                        if (uri == null) "♫" else "♫  ♪  ♫",
-                        color = Purple,
-                        fontSize = 48.sp
-                    )
-                }
-            }
-
-            Text(
-                title,
-                color = Color.White,
-                fontSize = 16.sp,
-                fontWeight = FontWeight.Medium,
-                maxLines = 2,
-                modifier = Modifier.padding(top = 20.dp, bottom = 8.dp)
-            )
-
-            Text(
-                if (playlistCount > 1) {
-                    "Playlist • $playlistCount lagu"
-                } else {
-                    "Local media"
-                },
-                color = Color.Gray,
-                fontSize = 12.sp,
-                modifier = Modifier.padding(bottom = 12.dp)
+                modifier = Modifier.padding(top = 4.dp, bottom = 18.dp)
             )
 
             Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(10.dp)
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(Panel, RoundedCornerShape(16.dp))
+                    .padding(4.dp),
+                horizontalArrangement = Arrangement.spacedBy(4.dp)
             ) {
-                Button(
-                    onClick = onPickAudio,
-                    modifier = Modifier.weight(1f)
-                ) {
-                    Text("Pilih audio")
-                }
+                listOf(
+                    MediaPage.AUDIO to "🎵 Audio",
+                    MediaPage.VIDEO to "🎬 Video"
+                ).forEach { (item, label) ->
+                    val selected = page == item
 
-                Button(
-                    onClick = onPickVideo,
-                    modifier = Modifier.weight(1f)
-                ) {
-                    Text("Pilih video")
+                    Button(
+                        onClick = { onSelectPage(item) },
+                        modifier = Modifier.weight(1f),
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = if (selected) Purple else Panel,
+                            contentColor = if (selected) Color.Black else Color.LightGray
+                        )
+                    ) {
+                        Text(label, fontWeight = FontWeight.Bold)
+                    }
                 }
             }
 
-            if (!video) {
-                Slider(
-                    value = sliderPosition.coerceIn(
-                        0f,
-                        duration.coerceAtLeast(1L).toFloat()
-                    ),
-                    onValueChange = {
-                        isSeeking = true
-                        sliderPosition = it
-                    },
-                    onValueChangeFinished = {
-                        onSeek(sliderPosition.toLong())
-                        isSeeking = false
-                    },
-                    valueRange = 0f..duration.coerceAtLeast(1L).toFloat(),
-                    enabled = uri != null && duration > 0L,
-                    modifier = Modifier.padding(top = 12.dp)
-                )
+            Spacer(Modifier.height(18.dp))
 
-                Text(
-                    "${formatTime(position)} / ${formatTime(duration)}",
-                    color = Color.LightGray,
-                    fontSize = 12.sp
-                )
-
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(top = 8.dp),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    OutlinedButton(
-                        onClick = onPrevious,
-                        enabled = uri != null && controllerReady,
-                        modifier = Modifier.weight(1f)
+            when (page) {
+                MediaPage.AUDIO -> {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(160.dp)
+                            .background(Panel, RoundedCornerShape(20.dp)),
+                        contentAlignment = Alignment.Center
                     ) {
-                        Text("⏮")
+                        Text(
+                            if (uri != null && !video) "♫  ♪  ♫" else "♫",
+                            color = Purple,
+                            fontSize = 48.sp
+                        )
                     }
+
+                    Text(
+                        if (!video && uri != null) title else "Belum ada audio dipilih",
+                        color = Color.White,
+                        fontSize = 16.sp,
+                        fontWeight = FontWeight.Medium,
+                        maxLines = 2,
+                        modifier = Modifier.padding(top = 16.dp, bottom = 8.dp)
+                    )
+
+                    Text(
+                        if (!video && playlistCount > 1) {
+                            "Playlist • $playlistCount lagu"
+                        } else {
+                            "Pemutar audio lokal"
+                        },
+                        color = Color.Gray,
+                        fontSize = 12.sp
+                    )
 
                     Button(
-                        onClick = onPlayPause,
-                        enabled = uri != null && controllerReady,
-                        modifier = Modifier.weight(1.5f)
+                        onClick = onPickAudio,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(top = 12.dp)
                     ) {
-                        Text(if (playing) "Pause Ⅱ" else "Play ▶")
+                        Text("Pilih playlist audio")
                     }
 
-                    OutlinedButton(
-                        onClick = onNext,
-                        enabled = uri != null && controllerReady,
-                        modifier = Modifier.weight(1f)
+                    Slider(
+                        value = sliderPosition.coerceIn(
+                            0f,
+                            duration.coerceAtLeast(1L).toFloat()
+                        ),
+                        onValueChange = {
+                            isSeeking = true
+                            sliderPosition = it
+                        },
+                        onValueChangeFinished = {
+                            onSeek(sliderPosition.toLong())
+                            isSeeking = false
+                        },
+                        valueRange = 0f..duration.coerceAtLeast(1L).toFloat(),
+                        enabled = !video && uri != null && duration > 0L
+                    )
+
+                    Text(
+                        "${formatTime(position)} / ${formatTime(duration)}",
+                        color = Color.LightGray,
+                        fontSize = 12.sp
+                    )
+
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(top = 8.dp),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Text("⏭")
+                        OutlinedButton(
+                            onClick = onPrevious,
+                            enabled = !video && uri != null && controllerReady,
+                            modifier = Modifier.weight(1f)
+                        ) {
+                            Text("⏮")
+                        }
+
+                        Button(
+                            onClick = onPlayPause,
+                            enabled = !video && uri != null && controllerReady,
+                            modifier = Modifier.weight(1.5f)
+                        ) {
+                            Text(if (playing && !video) "Pause Ⅱ" else "Play ▶")
+                        }
+
+                        OutlinedButton(
+                            onClick = onNext,
+                            enabled = !video && uri != null && controllerReady,
+                            modifier = Modifier.weight(1f)
+                        ) {
+                            Text("⏭")
+                        }
+                    }
+
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(top = 8.dp),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        OutlinedButton(
+                            onClick = onToggleShuffle,
+                            enabled = !video && uri != null && controllerReady,
+                            modifier = Modifier.weight(1f)
+                        ) {
+                            Text(if (shuffleEnabled) "Shuffle ON" else "Shuffle OFF")
+                        }
+
+                        OutlinedButton(
+                            onClick = onCycleRepeat,
+                            enabled = !video && uri != null && controllerReady,
+                            modifier = Modifier.weight(1f)
+                        ) {
+                            Text(repeatLabel)
+                        }
                     }
                 }
 
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(top = 8.dp),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    OutlinedButton(
-                        onClick = onToggleShuffle,
-                        enabled = uri != null && controllerReady,
-                        modifier = Modifier.weight(1f)
-                    ) {
-                        Text(if (shuffleEnabled) "Shuffle ON" else "Shuffle OFF")
+                MediaPage.VIDEO -> {
+                    if (video && uri != null) {
+                        AndroidView(
+                            factory = { context ->
+                                PlayerView(context).apply {
+                                    this.player = player
+                                    useController = true
+                                }
+                            },
+                            update = { view ->
+                                view.player = player
+                            },
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(240.dp)
+                        )
+
+                        Text(
+                            title,
+                            color = Color.White,
+                            fontSize = 16.sp,
+                            maxLines = 2,
+                            modifier = Modifier.padding(vertical = 12.dp)
+                        )
+                    } else {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(240.dp)
+                                .background(Panel, RoundedCornerShape(20.dp)),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                Text("▶", color = Purple, fontSize = 48.sp)
+                                Text(
+                                    "Belum ada video dipilih",
+                                    color = Color.LightGray
+                                )
+                            }
+                        }
                     }
 
-                    OutlinedButton(
-                        onClick = onCycleRepeat,
-                        enabled = uri != null && controllerReady,
-                        modifier = Modifier.weight(1f)
+                    Button(
+                        onClick = onPickVideo,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(top = 16.dp)
                     ) {
-                        Text(repeatLabel)
+                        Text("Pilih video lokal")
                     }
+
+                    Text(
+                        "Pencarian video online menyusul di tahap berikutnya.",
+                        color = Color.Gray,
+                        fontSize = 12.sp,
+                        modifier = Modifier.padding(top = 12.dp)
+                    )
                 }
             }
 
             Spacer(Modifier.weight(1f))
 
             Text(
-                "Local audio & video player",
+                "YoruPlay • Local media player",
                 color = Color.Gray,
                 fontSize = 12.sp
             )
@@ -605,4 +675,4 @@ private fun MediaHome(
 private fun formatTime(milliseconds: Long): String {
     val totalSeconds = milliseconds.coerceAtLeast(0L) / 1000
     return "%d:%02d".format(totalSeconds / 60, totalSeconds % 60)
-}
+}EOF
