@@ -1,10 +1,10 @@
-
 package com.diav.yoruplay
 
 import android.content.ComponentName
 import android.content.Intent
 import android.net.Uri
 import android.os.Bundle
+import android.provider.OpenableColumns
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
@@ -46,19 +46,31 @@ class MainActivity : ComponentActivity() {
     private var duration by mutableLongStateOf(0L)
     private var position by mutableLongStateOf(0L)
     private var controllerReady by mutableStateOf(false)
+    private var shuffleEnabled by mutableStateOf(false)
+    private var repeatMode by mutableIntStateOf(Player.REPEAT_MODE_OFF)
+    private var playlistCount by mutableIntStateOf(0)
+
     private var pendingMedia: Pair<Uri, Boolean>? = null
+    private var pendingPlaylist: List<Uri>? = null
 
     private val audioPicker =
-        registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
-            uri?.let { openMedia(it, false) }
+        registerForActivityResult(
+            ActivityResultContracts.OpenMultipleDocuments()
+        ) { uris ->
+            if (uris.isNotEmpty()) {
+                openAudioPlaylist(uris)
+            }
         }
 
     private val videoPicker =
-        registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        registerForActivityResult(
+            ActivityResultContracts.OpenDocument()
+        ) { uri ->
             uri?.let { openMedia(it, true) }
         }
 
     private val playerListener = object : Player.Listener {
+
         override fun onIsPlayingChanged(playing: Boolean) {
             isPlaying = playing
         }
@@ -71,6 +83,7 @@ class MainActivity : ComponentActivity() {
             mediaItem: MediaItem?,
             reason: Int
         ) {
+            updateCurrentMediaInfo()
             updatePlayerInfo()
         }
 
@@ -80,6 +93,14 @@ class MainActivity : ComponentActivity() {
             reason: Int
         ) {
             position = newPosition.positionMs.coerceAtLeast(0L)
+        }
+
+        override fun onShuffleModeEnabledChanged(shuffleModeEnabled: Boolean) {
+            shuffleEnabled = shuffleModeEnabled
+        }
+
+        override fun onRepeatModeChanged(newRepeatMode: Int) {
+            repeatMode = newRepeatMode
         }
     }
 
@@ -105,9 +126,16 @@ class MainActivity : ComponentActivity() {
                     controller = mediaController
                     mediaController.addListener(playerListener)
                     controllerReady = true
+
+                    shuffleEnabled = mediaController.shuffleModeEnabled
+                    repeatMode = mediaController.repeatMode
+                    updateCurrentMediaInfo()
                     updatePlayerInfo()
 
-                    pendingMedia?.let { (uri, video) ->
+                    pendingPlaylist?.let { uris ->
+                        pendingPlaylist = null
+                        playAudioPlaylist(uris)
+                    } ?: pendingMedia?.let { (uri, video) ->
                         pendingMedia = null
                         playMedia(uri, video)
                     }
@@ -135,6 +163,9 @@ class MainActivity : ComponentActivity() {
                     position = position,
                     player = controller,
                     controllerReady = controllerReady,
+                    shuffleEnabled = shuffleEnabled,
+                    repeatMode = repeatMode,
+                    playlistCount = playlistCount,
                     onPickAudio = {
                         audioPicker.launch(arrayOf("audio/*"))
                     },
@@ -146,6 +177,38 @@ class MainActivity : ComponentActivity() {
                             if (it.isPlaying) it.pause() else it.play()
                         }
                     },
+                    onPrevious = {
+                        controller?.let {
+                            if (it.hasPreviousMediaItem()) {
+                                it.seekToPreviousMediaItem()
+                            } else {
+                                it.seekTo(0L)
+                            }
+                        }
+                    },
+                    onNext = {
+                        controller?.let {
+                            if (it.hasNextMediaItem()) {
+                                it.seekToNextMediaItem()
+                            } else if (it.mediaItemCount > 0) {
+                                it.seekTo(0L)
+                            }
+                        }
+                    },
+                    onToggleShuffle = {
+                        controller?.let {
+                            it.shuffleModeEnabled = !it.shuffleModeEnabled
+                        }
+                    },
+                    onCycleRepeat = {
+                        controller?.let {
+                            it.repeatMode = when (it.repeatMode) {
+                                Player.REPEAT_MODE_OFF -> Player.REPEAT_MODE_ALL
+                                Player.REPEAT_MODE_ALL -> Player.REPEAT_MODE_ONE
+                                else -> Player.REPEAT_MODE_OFF
+                            }
+                        }
+                    },
                     onSeek = { value ->
                         controller?.seekTo(value)
                         position = value
@@ -155,36 +218,101 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    private fun updatePlayerInfo() {
-        controller?.let { player ->
-            duration = player.duration.coerceAtLeast(0L)
-            position = player.currentPosition.coerceAtLeast(0L)
-            isPlaying = player.isPlaying
+    private fun displayName(uri: Uri): String {
+        var name: String? = null
+
+        try {
+            contentResolver.query(
+                uri,
+                arrayOf(OpenableColumns.DISPLAY_NAME),
+                null,
+                null,
+                null
+            )?.use { cursor ->
+                if (cursor.moveToFirst()) {
+                    val index =
+                        cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+                    if (index >= 0) {
+                        name = cursor.getString(index)
+                    }
+                }
+            }
+        } catch (_: Exception) {
         }
+
+        return name?.takeIf { it.isNotBlank() }
+            ?: uri.lastPathSegment?.substringAfterLast('/')
+                ?.takeIf { it.isNotBlank() }
+            ?: "Media lokal"
     }
 
-    private fun openMedia(uri: Uri, video: Boolean) {
+    private fun persistReadPermission(uri: Uri) {
         try {
             contentResolver.takePersistableUriPermission(
                 uri,
                 Intent.FLAG_GRANT_READ_URI_PERMISSION
             )
         } catch (_: SecurityException) {
-            // Beberapa penyedia dokumen tidak mendukung izin persisten.
+            // Sebagian penyedia dokumen tidak mendukung izin persisten.
+        } catch (_: IllegalArgumentException) {
+        }
+    }
+
+    private fun openAudioPlaylist(uris: List<Uri>) {
+        if (uris.isEmpty()) return
+
+        uris.forEach { persistReadPermission(it) }
+
+        selectedUri = uris.first()
+        selectedName = displayName(uris.first())
+        isVideo = false
+        playlistCount = uris.size
+
+        if (controllerReady && controller != null) {
+            playAudioPlaylist(uris)
+        } else {
+            pendingPlaylist = uris.toList()
+            pendingMedia = null
+        }
+    }
+
+    private fun playAudioPlaylist(uris: List<Uri>) {
+        if (uris.isEmpty()) return
+
+        val mediaItems = uris.map { uri ->
+            MediaItem.Builder()
+                .setMediaId(uri.toString())
+                .setUri(uri)
+                .build()
         }
 
-        selectedUri = uri
-        selectedName = uri.lastPathSegment
-            ?.substringAfterLast('/')
-            ?.takeIf { it.isNotBlank() }
-            ?: if (video) "Video lokal" else "Audio lokal"
+        controller?.apply {
+            setMediaItems(mediaItems, 0, 0L)
+            prepare()
+            playWhenReady = true
+        }
 
+        selectedUri = uris.first()
+        selectedName = displayName(uris.first())
+        isVideo = false
+        playlistCount = uris.size
+        position = 0L
+        duration = 0L
+    }
+
+    private fun openMedia(uri: Uri, video: Boolean) {
+        persistReadPermission(uri)
+
+        selectedUri = uri
+        selectedName = displayName(uri)
         isVideo = video
+        playlistCount = 1
 
         if (controllerReady && controller != null) {
             playMedia(uri, video)
         } else {
             pendingMedia = uri to video
+            pendingPlaylist = null
         }
     }
 
@@ -194,8 +322,31 @@ class MainActivity : ComponentActivity() {
             prepare()
             playWhenReady = true
         }
+
+        selectedUri = uri
+        selectedName = displayName(uri)
+        isVideo = video
+        playlistCount = 1
         position = 0L
         duration = 0L
+    }
+
+    private fun updateCurrentMediaInfo() {
+        val player = controller ?: return
+        val uri = player.currentMediaItem?.localConfiguration?.uri ?: return
+
+        selectedUri = uri
+        selectedName = displayName(uri)
+    }
+
+    private fun updatePlayerInfo() {
+        controller?.let { player ->
+            duration = player.duration.coerceAtLeast(0L)
+            position = player.currentPosition.coerceAtLeast(0L)
+            isPlaying = player.isPlaying
+            shuffleEnabled = player.shuffleModeEnabled
+            repeatMode = player.repeatMode
+        }
     }
 
     override fun onDestroy() {
@@ -230,9 +381,16 @@ private fun MediaHome(
     position: Long,
     player: Player?,
     controllerReady: Boolean,
+    shuffleEnabled: Boolean,
+    repeatMode: Int,
+    playlistCount: Int,
     onPickAudio: () -> Unit,
     onPickVideo: () -> Unit,
     onPlayPause: () -> Unit,
+    onPrevious: () -> Unit,
+    onNext: () -> Unit,
+    onToggleShuffle: () -> Unit,
+    onCycleRepeat: () -> Unit,
     onSeek: (Long) -> Unit
 ) {
     var sliderPosition by remember { mutableFloatStateOf(0f) }
@@ -250,6 +408,12 @@ private fun MediaHome(
             }
             delay(500)
         }
+    }
+
+    val repeatLabel = when (repeatMode) {
+        Player.REPEAT_MODE_ONE -> "Repeat: ONE"
+        Player.REPEAT_MODE_ALL -> "Repeat: ALL"
+        else -> "Repeat: OFF"
     }
 
     Surface(
@@ -313,7 +477,18 @@ private fun MediaHome(
                 fontSize = 16.sp,
                 fontWeight = FontWeight.Medium,
                 maxLines = 2,
-                modifier = Modifier.padding(top = 20.dp, bottom = 12.dp)
+                modifier = Modifier.padding(top = 20.dp, bottom = 8.dp)
+            )
+
+            Text(
+                if (playlistCount > 1) {
+                    "Playlist • $playlistCount lagu"
+                } else {
+                    "Local media"
+                },
+                color = Color.Gray,
+                fontSize = 12.sp,
+                modifier = Modifier.padding(bottom = 12.dp)
             )
 
             Row(
@@ -351,7 +526,7 @@ private fun MediaHome(
                     },
                     valueRange = 0f..duration.coerceAtLeast(1L).toFloat(),
                     enabled = uri != null && duration > 0L,
-                    modifier = Modifier.padding(top = 16.dp)
+                    modifier = Modifier.padding(top = 12.dp)
                 )
 
                 Text(
@@ -360,12 +535,59 @@ private fun MediaHome(
                     fontSize = 12.sp
                 )
 
-                Button(
-                    onClick = onPlayPause,
-                    enabled = uri != null && controllerReady,
-                    modifier = Modifier.padding(top = 12.dp)
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(top = 8.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Text(if (playing) "Pause Ⅱ" else "Play ▶")
+                    OutlinedButton(
+                        onClick = onPrevious,
+                        enabled = uri != null && controllerReady,
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        Text("⏮")
+                    }
+
+                    Button(
+                        onClick = onPlayPause,
+                        enabled = uri != null && controllerReady,
+                        modifier = Modifier.weight(1.5f)
+                    ) {
+                        Text(if (playing) "Pause Ⅱ" else "Play ▶")
+                    }
+
+                    OutlinedButton(
+                        onClick = onNext,
+                        enabled = uri != null && controllerReady,
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        Text("⏭")
+                    }
+                }
+
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(top = 8.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    OutlinedButton(
+                        onClick = onToggleShuffle,
+                        enabled = uri != null && controllerReady,
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        Text(if (shuffleEnabled) "Shuffle ON" else "Shuffle OFF")
+                    }
+
+                    OutlinedButton(
+                        onClick = onCycleRepeat,
+                        enabled = uri != null && controllerReady,
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        Text(repeatLabel)
+                    }
                 }
             }
 
