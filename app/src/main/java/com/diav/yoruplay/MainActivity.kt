@@ -675,4 +675,4 @@ private fun MediaHome(
 private fun formatTime(milliseconds: Long): String {
     val totalSeconds = milliseconds.coerceAtLeast(0L) / 1000
     return "%d:%02d".format(totalSeconds / 60, totalSeconds % 60)
-}EOF
+}
