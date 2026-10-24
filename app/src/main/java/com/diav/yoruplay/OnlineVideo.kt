@@ -248,43 +248,88 @@ private fun OnlineYouTubePlayer(
         modifier = modifier,
         factory = { context ->
             WebView(context).apply {
+                setBackgroundColor(android.graphics.Color.BLACK)
+
                 settings.javaScriptEnabled = true
                 settings.domStorageEnabled = true
-                webChromeClient = WebChromeClient()
-                webViewClient = WebViewClient()
-                setBackgroundColor(android.graphics.Color.BLACK)
+                settings.mediaPlaybackRequiresUserGesture = true
+
+                webChromeClient = object : WebChromeClient() {
+                    override fun onConsoleMessage(
+                        consoleMessage: android.webkit.ConsoleMessage
+                    ): Boolean {
+                        android.util.Log.d(
+                            "YoruPlayWeb",
+                            "JS: ${consoleMessage.message()} " +
+                                "(${consoleMessage.sourceId()}:${consoleMessage.lineNumber()})"
+                        )
+                        return true
+                    }
+                }
+
+                webViewClient = object : WebViewClient() {
+                    override fun onReceivedError(
+                        view: WebView,
+                        request: android.webkit.WebResourceRequest,
+                        error: android.webkit.WebResourceError
+                    ) {
+                        super.onReceivedError(view, request, error)
+                        if (request.isForMainFrame) {
+                            android.util.Log.e(
+                                "YoruPlayWeb",
+                                "Main-frame error: ${error.errorCode} ${error.description}"
+                            )
+                        }
+                    }
+
+                    override fun onReceivedHttpError(
+                        view: WebView,
+                        request: android.webkit.WebResourceRequest,
+                        response: android.webkit.WebResourceResponse
+                    ) {
+                        super.onReceivedHttpError(view, request, response)
+                        android.util.Log.w(
+                            "YoruPlayWeb",
+                            "HTTP ${response.statusCode}: ${request.url}"
+                        )
+                    }
+                }
             }
         },
         update = { webView ->
-            val html = """
-                <!DOCTYPE html>
-                <html>
-                <head>
-                <meta name="viewport" content="width=device-width, initial-scale=1.0">
-                <style>
-                    html, body { margin:0; padding:0; width:100%; height:100%;
-                    background:#000; overflow:hidden; }
-                    iframe { position:absolute; width:100%; height:100%;
-                    border:0; left:0; top:0; }
-                </style>
-                </head>
-                <body>
-                <iframe
-                    src="https://www.youtube.com/embed/$videoId?playsinline=1"
-                    title="YoruPlay video player"
-                    allow="accelerometer; autoplay; clipboard-write; encrypted-media;
-                    gyroscope; picture-in-picture; web-share"
-                    referrerpolicy="strict-origin-when-cross-origin"
-                    allowfullscreen>
-                </iframe>
-                </body>
-                </html>
-            """.trimIndent()
             val marker = "yoruplay-video:$videoId"
             if (webView.tag != marker) {
                 webView.tag = marker
+
+                val html = """
+                    <!DOCTYPE html>
+                    <html>
+                    <head>
+                    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+                    <style>
+                      html, body {
+                        margin: 0; padding: 0; width: 100%; height: 100%;
+                        background: #000; overflow: hidden;
+                      }
+                      iframe {
+                        position: absolute; width: 100%; height: 100%;
+                        border: 0; left: 0; top: 0;
+                      }
+                    </style>
+                    </head>
+                    <body>
+                    <iframe
+                      src="https://www.youtube.com/embed/$videoId?playsinline=1"
+                      title="YoruPlay video player"
+                      allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
+                      allowfullscreen>
+                    </iframe>
+                    </body>
+                    </html>
+                """.trimIndent()
+
                 webView.loadDataWithBaseURL(
-                    "https://www.youtube.com",
+                    "https://www.youtube.com/",
                     html,
                     "text/html",
                     "UTF-8",
